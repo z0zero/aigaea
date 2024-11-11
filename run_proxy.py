@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class ProxyFormat:
     def __init__(self, proxy_string: str):
         """
-        Parse proxy string in format: scheme://ip:port@username:password
+        Parse proxy string in format: scheme://username:password@ip:port
         """
         try:
             # Split scheme if exists
@@ -35,14 +35,14 @@ class ProxyFormat:
                 self.scheme = "http"
                 remainder = proxy_string
             
-            # Split address and auth
+            # Split auth and address
             if "@" in remainder:
-                address, auth = remainder.split("@", 1)
-                self.ip, self.port = address.split(":", 1)
+                auth, address = remainder.split("@", 1)
                 self.username, self.password = auth.split(":", 1)
+                self.ip, self.port = address.split(":", 1)
             else:
-                self.ip, self.port = remainder.split(":", 1)
                 self.username = self.password = None
+                self.ip, self.port = remainder.split(":", 1)
             
             # Convert port to integer
             self.port = int(self.port)
@@ -87,18 +87,13 @@ class AigaeaPinger:
             
             # Configure the SOCKS proxy
             session.proxies = {
-                'http': f'{proxy.scheme}://{proxy.ip}:{proxy.port}',
-                'https': f'{proxy.scheme}://{proxy.ip}:{proxy.port}'
+                'http': f'{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}',
+                'https': f'{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}'
             }
-            
-            if proxy.username and proxy.password:
-                session.proxies = {
-                    'http': f'{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}',
-                    'https': f'{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}'
-                }
             
             # Optional: Set up SOCKS proxy without altering global socket
             session.trust_env = False  # Avoid inheriting proxies from environment
+
         return session
 
     def _worker(self, proxy_string: str):
@@ -118,6 +113,7 @@ class AigaeaPinger:
                     }
                     
                     if proxy.scheme.lower() in ['socks5', 'socks4']:
+                        # For SOCKS proxies, use the configured session
                         response = session.post(
                             url="https://api.aigaea.net/api/network/ping",
                             json=payload,
@@ -126,13 +122,17 @@ class AigaeaPinger:
                             verify=True
                         )
                     else:
-                        proxies = {
-                            "http": f"{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}",
-                            "https": f"{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}"
-                        } if proxy.username and proxy.password else {
-                            "http": f"{proxy.scheme}://{proxy.ip}:{proxy.port}",
-                            "https": f"{proxy.scheme}://{proxy.ip}:{proxy.port}"
-                        }
+                        # For HTTP proxies, use proxies parameter
+                        if proxy.username and proxy.password:
+                            proxies = {
+                                "http": f"{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}",
+                                "https": f"{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}"
+                            }
+                        else:
+                            proxies = {
+                                "http": f"{proxy.scheme}://{proxy.ip}:{proxy.port}",
+                                "https": f"{proxy.scheme}://{proxy.ip}:{proxy.port}"
+                            }
                         
                         response = session.post(
                             url="https://api.aigaea.net/api/network/ping",
