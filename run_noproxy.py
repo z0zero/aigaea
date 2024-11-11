@@ -1,4 +1,4 @@
-#https://github.com/ylasgamers || @ylasgamers
+#https://github.com/z0zero || @z0zero
 import aiohttp
 import asyncio
 import random

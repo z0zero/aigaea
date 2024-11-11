@@ -1,4 +1,4 @@
-#https://github.com/ylasgamers || @ylasgamers
+#https://github.com/z0zero || @z0zero
 import aiohttp
 import asyncio
 import json
@@ -10,6 +10,7 @@ from aiohttp import ClientSession, ClientTimeout
 from fake_useragent import UserAgent
 import itertools
 import sys
+import random
 
 # Function to read proxies from the local file
 def load_proxies(file_path='local_proxies.txt'):
@@ -34,12 +35,14 @@ def get_uid(token):
 
 # Function to connect to the API using a proxy from the list
 async def connect_to_http(uid, token, proxy, device_id):
-    user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers='chrome')
-    random_user_agent = user_agent.random
-    logger.info(f"Using proxy: {proxy}")
+    random_delay = random.uniform(1, 5)
+    await asyncio.sleep(random_delay)
+    
+    user_agent = random.choice(COMMON_BROWSERS)
+    logger.info(f"Using proxy: {proxy} after {random_delay:.2f}s delay")
 
     async with aiohttp.ClientSession(
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": random_user_agent, "Connection": "keep-alive"},
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": user_agent, "Connection": "keep-alive"},
         timeout=ClientTimeout(total=None, connect=10),
     ) as session:
         try:
@@ -47,32 +50,38 @@ async def connect_to_http(uid, token, proxy, device_id):
             logger.info(f"Browser Id : {device_id}")
             logger.info(f"Connecting to {uri} using proxy: {proxy}...")
 
-            # Data to send in the POST request
+            timestamp_jitter = int(time.time()) + random.randint(-2, 2)
+            
             data = {
                 "uid": uid,
                 "browser_id": device_id,
-                "timestamp": int(time.time()),
+                "timestamp": timestamp_jitter,
                 "version": "1.0.0",
             }
 
-            # Use the current proxy for the request
             async with session.post(uri, json=data, proxy=f"{proxy}") as response:
                 if response.status == 200:
-                    # Parse the response if needed
                     response_data = await response.json()
-                    logger.info(f"Received response: {response_data}")
+                    logger.success(f"Success: Proxy {proxy} - Response: {response_data}")
+                elif response.status == 429:
+                    logger.warning(f"Rate limited for proxy {proxy}. Waiting longer...")
+                    await asyncio.sleep(random.uniform(10, 15))
                 else:
-                    logger.error(f"Request failed with status {response.status}")
+                    logger.error(f"Request failed with status {response.status} for proxy {proxy}")
+                    await asyncio.sleep(random.uniform(3, 5))
+        except aiohttp.ClientProxyConnectionError:
+            logger.error(f"Proxy connection failed: {proxy}")
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout for proxy: {proxy}")
         except Exception as e:
-            logger.error(f"Error using proxy {proxy}: {str(e)}")
+            logger.error(f"Unexpected error with proxy {proxy}: {str(e)}")
 
 # Function to run all proxies concurrently
-async def run_all_proxies(uid, token, proxies):
+async def run_all_proxies(uid, token, proxies, device_ids):
     tasks = []
-    device_id = str(uuid.uuid4())
     
-    # Create a task for each proxy
-    for proxy in proxies:
+    # Create a task for each proxy using its dedicated device_id
+    for proxy, device_id in zip(proxies, device_ids):
         task = asyncio.create_task(connect_to_http(uid, token, proxy, device_id))
         tasks.append(task)
     
@@ -80,17 +89,35 @@ async def run_all_proxies(uid, token, proxies):
     await asyncio.gather(*tasks)
 
 # Function to loop through proxies continuously
-async def loop_proxies(uid, token, proxies, delays, loop_count=None):
+async def loop_proxies(uid, token, proxies, base_delay, loop_count=None):
+    stats = {
+        "total_requests": 0,
+        "successful_requests": 0,
+        "failed_requests": 0
+    }
+    
+    device_ids = [str(uuid.uuid4()) for _ in proxies]
     count = 0
+    retry_counts = {proxy: 0 for proxy in proxies}
+    
     while True:
+        stats["total_requests"] += len(active_proxies)
+        logger.info(f"Statistics: {stats}")
+        
         logger.info(f"Starting loop {count + 1}...")
-        await run_all_proxies(uid, token, proxies)
+        active_proxies = [p for p in proxies if retry_counts[p] < MAX_RETRIES]
         
-        # Optional: add a delay between each cycle
-        print(f"Cycle {count + 1} completed. Waiting before next cycle in {delays} seconds...")
-        await asyncio.sleep(delays)  # Delay between cycles (in seconds)
+        if not active_proxies:
+            logger.error("All proxies have exceeded retry limit. Exiting...")
+            break
+            
+        active_device_ids = [d for p, d in zip(proxies, device_ids) if p in active_proxies]
+        await run_all_proxies(uid, token, active_proxies, active_device_ids)
         
-        # Increment loop counter and check if we should stop after certain iterations
+        random_delay = base_delay + random.uniform(-5, 5)
+        print(f"Cycle {count + 1} completed. Waiting {random_delay:.2f} seconds before next cycle...")
+        await asyncio.sleep(random_delay)
+        
         count += 1
         if loop_count and count >= loop_count:
             logger.info(f"Completed {loop_count} loops. Exiting.")
@@ -98,11 +125,27 @@ async def loop_proxies(uid, token, proxies, delays, loop_count=None):
 
 # For testing the function
 async def main():
-    delays = int(input('Input Delay Second Per Looping : '))
-    tokenid = input('Input Token AIGAEA : ')
-    proxies = load_proxies()  # Load proxies from the local file
-    loop_count = None  # Set a specific number of loops, or None for infinite looping
-    await loop_proxies(get_uid(tokenid), tokenid, proxies, delays, loop_count)
+    try:
+        base_delay = int(input('Input Base Delay Second Per Looping : '))
+        tokenid = input('Input Token AIGAEA : ')
+        
+        if base_delay < 10:
+            logger.warning("Base delay terlalu rendah, disarankan minimal 10 detik")
+            return
+            
+        proxies = load_proxies()
+        if not proxies:
+            logger.error("Tidak ada proxy yang tersedia")
+            return
+            
+        logger.info(f"Starting bot with {len(proxies)} proxies")
+        await loop_proxies(get_uid(tokenid), tokenid, proxies, base_delay)
+    except KeyboardInterrupt:
+        logger.info("Bot dihentikan oleh user")
+    except Exception as e:
+        logger.error(f"Error tidak terduga: {str(e)}")
+    finally:
+        logger.info("Bot berhenti")
 
 # Run the main function
 if __name__ == "__main__":
