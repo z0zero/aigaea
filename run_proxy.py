@@ -142,13 +142,15 @@ async def loop_proxies(uid, token, proxies, base_delay, loop_count=None):
     device_ids = [str(uuid.uuid4()) for _ in proxies]
     count = 0
     retry_counts = {proxy: 0 for proxy in proxies}
+    MAX_RETRIES = 3
     
     while True:
+        active_proxies = [p for p in proxies if retry_counts[p] < MAX_RETRIES]
+        
         stats["total_requests"] += len(active_proxies)
         logger.info(f"Statistics: {stats}")
         
         logger.info(f"Starting loop {count + 1}...")
-        active_proxies = [p for p in proxies if retry_counts[p] < MAX_RETRIES]
         
         if not active_proxies:
             logger.error("All proxies have exceeded retry limit. Exiting...")
