@@ -16,7 +16,7 @@ import random
 def load_proxies(file_path='local_proxies.txt'):
     with open(file_path, 'r') as f:
         proxies = [line.strip() for line in f.readlines()]
-    return proxies  # Return all proxies if there are 100 or more
+    return proxies
 
 # Function to get the UID menggunakan token yang diberikan dengan mekanisme retry
 def get_uid(token, max_retries=5, backoff_factor=2):
@@ -121,12 +121,10 @@ async def run_all_proxies(uid, token, proxies):
     tasks = []
     device_id = str(uuid.uuid4())
     
-    # Membuat tugas untuk setiap proxy
     for proxy in proxies:
         task = asyncio.create_task(connect_to_http(uid, token, proxy, device_id))
         tasks.append(task)
     
-    # Menjalankan semua tugas secara bersamaan
     await asyncio.gather(*tasks, return_exceptions=True)
 
 # Function to loop through proxies secara terus-menerus
@@ -136,11 +134,9 @@ async def loop_proxies(uid, token, proxies, delays, loop_count=None):
         logger.info(f"Memulai loop {count + 1}...")
         await run_all_proxies(uid, token, proxies)
         
-        # Menambahkan jeda antara setiap siklus
         print(f"Cycle {count + 1} selesai. Menunggu sebelum loop berikutnya dalam {delays} detik...")
-        await asyncio.sleep(delays)  # Delay antara siklus (dalam detik)
+        await asyncio.sleep(delays)
         
-        # Increment loop counter dan periksa apakah harus berhenti setelah iterasi tertentu
         count += 1
         if loop_count and count >= loop_count:
             logger.info(f"Selesai {loop_count} loops. Keluar.")
@@ -151,9 +147,13 @@ async def main():
     try:
         delays = int(input('Input Delay Second Per Looping : '))
         tokenid = input('Input Token AIGAEA : ')
-        proxies = load_proxies()  # Load proxies dari file lokal
-        loop_count = None  # Set jumlah loop tertentu, atau None untuk looping tak terbatas
-        await loop_proxies(get_uid(tokenid), tokenid, proxies, delays, loop_count)
+        proxies = load_proxies()
+        loop_count = None
+        uid = get_uid(tokenid)
+        if uid:
+            await loop_proxies(uid, tokenid, proxies, delays, loop_count)
+        else:
+            logger.error("Tidak dapat melanjutkan tanpa UID yang valid.")
     except KeyboardInterrupt:
         logger.info("Bot dihentikan oleh user")
     except Exception as e:
