@@ -20,18 +20,46 @@ def load_proxies(file_path='local_proxies.txt'):
 
 # Function to get the UID using the provided token
 def get_uid(token):
-    url = "https://api.aigaea.net/api/auth/session"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Origin": "http://app.aigaea.net",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
-    }
-    
-    response = requests.post(url, headers=headers)
-    result = response.json()
-    uid = result.get('data', {}).get('uid')
-    return uid
+    try:
+        url = "https://api.aigaea.net/api/auth/session"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Origin": "http://app.aigaea.net",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
+        }
+        
+        response = requests.post(url, headers=headers)
+        
+        # Periksa status code
+        if response.status_code != 200:
+            logger.error(f"Failed to get UID. Status code: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+            return None
+            
+        # Coba parse JSON
+        try:
+            result = response.json()
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON response: {response.text}")
+            logger.error(f"Error: {str(e)}")
+            return None
+            
+        # Periksa struktur response
+        uid = result.get('data', {}).get('uid')
+        if not uid:
+            logger.error(f"UID not found in response: {result}")
+            return None
+            
+        logger.success(f"Successfully got UID: {uid}")
+        return uid
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error while getting UID: {str(e)}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error while getting UID: {str(e)}")
+        return None
 
 # Function to connect to the API using a proxy from the list
 async def connect_to_http(uid, token, proxy, device_id):
@@ -139,7 +167,14 @@ async def main():
             return
             
         logger.info(f"Starting bot with {len(proxies)} proxies")
-        await loop_proxies(get_uid(tokenid), tokenid, proxies, base_delay)
+        
+        # Dapatkan UID dan validasi
+        uid = get_uid(tokenid)
+        if not uid:
+            logger.error("Gagal mendapatkan UID. Mohon periksa token Anda.")
+            return
+            
+        await loop_proxies(uid, tokenid, proxies, base_delay)
     except KeyboardInterrupt:
         logger.info("Bot dihentikan oleh user")
     except Exception as e:
