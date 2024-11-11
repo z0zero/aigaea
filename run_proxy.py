@@ -23,29 +23,44 @@ def get_uid(token):
     try:
         url = "https://api.aigaea.net/api/auth/session"
         headers = {
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "en-US,en;q=0.9",
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "Origin": "http://app.aigaea.net",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36"
+            "Origin": "https://app.aigaea.net",
+            "Referer": "https://app.aigaea.net/",
+            "Sec-Ch-Ua": '"Google Chrome";v="119", "Chromium";v="119", "Not?A_Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
         }
         
-        response = requests.post(url, headers=headers)
+        payload = {
+            "token": token
+        }
         
-        # Periksa status code
+        response = requests.post(url, headers=headers, json=payload)
+        
         if response.status_code != 200:
             logger.error(f"Failed to get UID. Status code: {response.status_code}")
             logger.error(f"Response: {response.text}")
+            if response.status_code == 500:
+                logger.info("Retrying after 5 seconds...")
+                time.sleep(5)
+                response = requests.post(url, headers=headers, json=payload)
+                if response.status_code == 200:
+                    result = response.json()
+                    uid = result.get('data', {}).get('uid')
+                    if uid:
+                        logger.success(f"Successfully got UID on retry: {uid}")
+                        return uid
             return None
             
-        # Coba parse JSON
-        try:
-            result = response.json()
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response: {response.text}")
-            logger.error(f"Error: {str(e)}")
-            return None
-            
-        # Periksa struktur response
+        result = response.json()
         uid = result.get('data', {}).get('uid')
         if not uid:
             logger.error(f"UID not found in response: {result}")
