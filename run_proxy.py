@@ -1,24 +1,204 @@
 #https://github.com/z0zero || @z0zero
-import aiohttp
-import asyncio
-import json
+import os
+import requests
 import uuid
 import time
-from loguru import logger
-import requests
-from aiohttp import ClientSession, ClientTimeout
-from fake_useragent import UserAgent
-import itertools
-import sys
-import random
+import threading
+import logging
+import socket
+import socks
+from typing import List
+from requests.exceptions import RequestException
 
-# Function to read proxies from the local file
-def load_proxies(file_path='local_proxies.txt'):
-    with open(file_path, 'r') as f:
-        proxies = [line.strip() for line in f.readlines()]
-    return proxies
+from dotenv import load_dotenv
 
-# Function to get the UID menggunakan token yang diberikan dengan mekanisme retry
+# Load environment variables
+load_dotenv()
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(threadName)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+class ProxyFormat:
+    def __init__(self, proxy_string: str):
+        """
+        Parse proxy string in format: scheme://ip:port@username:password
+        """
+        try:
+            # Split scheme if exists
+            if "://" in proxy_string:
+                self.scheme, remainder = proxy_string.split("://", 1)
+            else:
+                self.scheme = "http"
+                remainder = proxy_string
+            
+            # Split address and auth
+            if "@" in remainder:
+                address, auth = remainder.split("@", 1)
+                self.ip, self.port = address.split(":", 1)
+                self.username, self.password = auth.split(":", 1)
+            else:
+                self.ip, self.port = remainder.split(":", 1)
+                self.username = self.password = None
+            
+            # Convert port to integer
+            self.port = int(self.port)
+                
+        except Exception as e:
+            raise ValueError(f"Invalid proxy format: {proxy_string}") from e
+
+class AigaeaPinger:
+    def __init__(self, token: str, user_uid: str, proxy_file: str):
+        self.token = token
+        self.user_uid = user_uid
+        self.proxy_file = proxy_file
+        self.running = False
+        self.threads = []
+        
+        self.headers = {
+            "authorization": f"Bearer {self.token}",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+            "accept": "application/json",
+            "content-type": "application/json",
+            "origin": "https://app.aigaea.net",
+            "referer": "https://app.aigaea.net/",
+            "accept-language": "en-US,en;q=0.9",
+            "priority": "u=1, i"
+        }
+
+    def _load_proxies(self) -> List[str]:
+        try:
+            with open(self.proxy_file, 'r') as f:
+                return [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        except Exception as e:
+            logger.error(f"Error loading proxy file: {str(e)}")
+            return []
+
+    def _setup_socks_session(self, proxy: ProxyFormat) -> requests.Session:
+        """Create a session with SOCKS proxy configuration"""
+        session = requests.Session()
+        
+        if proxy.scheme.lower() in ['socks5', 'socks4']:
+            # Determine SOCKS version
+            socks_version = socks.SOCKS5 if proxy.scheme.lower() == 'socks5' else socks.SOCKS4
+            
+            # Configure the SOCKS proxy
+            session.proxies = {
+                'http': f'{proxy.scheme}://{proxy.ip}:{proxy.port}',
+                'https': f'{proxy.scheme}://{proxy.ip}:{proxy.port}'
+            }
+            
+            if proxy.username and proxy.password:
+                session.proxies = {
+                    'http': f'{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}',
+                    'https': f'{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}'
+                }
+            
+            # Optional: Set up SOCKS proxy without altering global socket
+            session.trust_env = False  # Avoid inheriting proxies from environment
+        return session
+
+    def _worker(self, proxy_string: str):
+        try:
+            proxy = ProxyFormat(proxy_string)
+            session = self._setup_socks_session(proxy) if proxy.scheme.lower() in ['socks5', 'socks4'] else requests.Session()
+            
+            browser_id = str(uuid.uuid3(uuid.NAMESPACE_DNS, proxy_string))
+            
+            while self.running:
+                try:
+                    payload = {
+                        "uid": self.user_uid,
+                        "browser_id": browser_id,
+                        "timestamp": int(time.time()),
+                        "version": "1.0.0"
+                    }
+                    
+                    if proxy.scheme.lower() in ['socks5', 'socks4']:
+                        response = session.post(
+                            url="https://api.aigaea.net/api/network/ping",
+                            json=payload,
+                            headers=self.headers,
+                            timeout=30,
+                            verify=True
+                        )
+                    else:
+                        proxies = {
+                            "http": f"{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}",
+                            "https": f"{proxy.scheme}://{proxy.username}:{proxy.password}@{proxy.ip}:{proxy.port}"
+                        } if proxy.username and proxy.password else {
+                            "http": f"{proxy.scheme}://{proxy.ip}:{proxy.port}",
+                            "https": f"{proxy.scheme}://{proxy.ip}:{proxy.port}"
+                        }
+                        
+                        response = session.post(
+                            url="https://api.aigaea.net/api/network/ping",
+                            json=payload,
+                            headers=self.headers,
+                            proxies=proxies,
+                            timeout=30,
+                            verify=True
+                        )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        logger.info(f"Success - Proxy: {proxy_string} - Response: {data}")
+                        sleep_time = data.get("data", {}).get("interval", 60)
+                        logger.info(f"Sleeping for {sleep_time} seconds")
+                        time.sleep(int(sleep_time))
+                    else:
+                        logger.error(f"Error - Proxy: {proxy_string} - Status Code: {response.status_code}")
+                        time.sleep(60)
+                        
+                except RequestException as e:
+                    logger.error(f"Request Error - Proxy: {proxy_string} - Error: {str(e)}")
+                    time.sleep(60)
+                    
+                except Exception as e:
+                    logger.error(f"General Error - Proxy: {proxy_string} - Error: {str(e)}")
+                    time.sleep(60)
+                    
+        except ValueError as ve:
+            logger.error(f"Worker Initialization Error - Proxy: {proxy_string} - Error: {str(ve)}")
+        except Exception as e:
+            logger.error(f"Worker Error - Proxy: {proxy_string} - Error: {str(e)}")
+
+    def start(self):
+        self.running = True
+        
+        proxies = self._load_proxies()
+        if not proxies:
+            logger.error("No valid proxies found in file")
+            return
+            
+        for proxy in proxies:
+            thread = threading.Thread(
+                target=self._worker,
+                args=(proxy,),
+                name=f"Worker-{proxy}"
+            )
+            thread.start()
+            self.threads.append(thread)
+            
+        logger.info(f"Started {len(self.threads)} worker threads")
+        
+        try:
+            while self.running:
+                time.sleep(1)
+                
+        except KeyboardInterrupt:
+            logger.info("Stopping all workers...")
+            self.stop()
+
+    def stop(self):
+        self.running = False
+        for thread in self.threads:
+            thread.join()
+        logger.info("All workers stopped")
+
 def get_uid(token, max_retries=5, backoff_factor=2):
     try:
         url = "https://api.aigaea.net/api/auth/session"
@@ -37,7 +217,7 @@ def get_uid(token, max_retries=5, backoff_factor=2):
                 result = response.json()
                 uid = result.get('data', {}).get('uid')
                 if uid:
-                    logger.success(f"Berhasil mendapatkan UID: {uid}")
+                    logger.info(f"Berhasil mendapatkan UID: {uid}")
                     return uid
                 else:
                     logger.error(f"UID tidak ditemukan dalam respons: {result}")
@@ -55,112 +235,23 @@ def get_uid(token, max_retries=5, backoff_factor=2):
         logger.error("Mencapai batas maksimal percobaan ulang. Gagal mendapatkan UID.")
         return None
 
-    except requests.exceptions.RequestException as e:
+    except RequestException as e:
         logger.error(f"Kesalahan jaringan saat mendapatkan UID: {str(e)}")
         return None
     except Exception as e:
         logger.error(f"Kesalahan tidak terduga saat mendapatkan UID: {str(e)}")
         return None
 
-# Function to connect to the API menggunakan proxy dari daftar
-async def connect_to_http(uid, token, proxy, device_id):
-    try:
-        user_agent = UserAgent(os=['windows', 'macos', 'linux'], browsers=['chrome'])
-        random_user_agent = user_agent.random
-    except Exception as e:
-        logger.error(f"Gagal mendapatkan User-Agent: {str(e)}")
-        random_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, seperti Gecko) Chrome/109.0.0.0 Safari/537.36"
-
-    random_delay = random.uniform(1, 5)
-    await asyncio.sleep(random_delay)
+def main():
+    token = os.getenv("TOKEN")
+    user_uid = os.getenv("UID")
     
-    logger.info(f"Menggunakan proxy: {proxy} setelah jeda {random_delay:.2f}s")
+    if not token or not user_uid:
+        logger.error("Missing required environment variables")
+        return
     
-    async with aiohttp.ClientSession(
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "User-Agent": random_user_agent,
-            "Connection": "keep-alive"
-        },
-        timeout=ClientTimeout(total=None, connect=10),
-    ) as session:
-        try:
-            uri = "https://api.aigaea.net/api/network/ping"
-            logger.info(f"Browser Id : {device_id}")
-            logger.info(f"Menghubungkan ke {uri} menggunakan proxy: {proxy}...")
+    pinger = AigaeaPinger(token, user_uid, "proxy.txt")
+    pinger.start()
 
-            timestamp_jitter = int(time.time()) + random.randint(-2, 2)
-            
-            data = {
-                "uid": uid,
-                "browser_id": device_id,
-                "timestamp": timestamp_jitter,
-                "version": "1.0.0",
-            }
-
-            async with session.post(uri, json=data, proxy=f"{proxy}") as response:
-                if response.status == 200:
-                    response_data = await response.json()
-                    logger.success(f"Berhasil: Proxy {proxy} - Respons: {response_data}")
-                elif response.status == 429:
-                    logger.warning(f"Dibatasi rate untuk proxy {proxy}. Menunggu lebih lama...")
-                    await asyncio.sleep(random.uniform(10, 15))
-                else:
-                    logger.error(f"Permintaan gagal dengan status {response.status} untuk proxy {proxy}")
-                    await asyncio.sleep(random.uniform(3, 5))
-        except aiohttp.ClientProxyConnectionError:
-            logger.error(f"Koneksi proxy gagal: {proxy}")
-        except asyncio.TimeoutError:
-            logger.error(f"Waktu habis untuk proxy: {proxy}")
-        except Exception as e:
-            logger.error(f"Kesalahan tidak terduga dengan proxy {proxy}: {str(e)}")
-
-# Function to run all proxies secara bersamaan
-async def run_all_proxies(uid, token, proxies):
-    tasks = []
-    device_id = str(uuid.uuid4())
-    
-    for proxy in proxies:
-        task = asyncio.create_task(connect_to_http(uid, token, proxy, device_id))
-        tasks.append(task)
-    
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-# Function to loop through proxies secara terus-menerus
-async def loop_proxies(uid, token, proxies, delays, loop_count=None):
-    count = 0
-    while True:
-        logger.info(f"Memulai loop {count + 1}...")
-        await run_all_proxies(uid, token, proxies)
-        
-        print(f"Cycle {count + 1} selesai. Menunggu sebelum loop berikutnya dalam {delays} detik...")
-        await asyncio.sleep(delays)
-        
-        count += 1
-        if loop_count and count >= loop_count:
-            logger.info(f"Selesai {loop_count} loops. Keluar.")
-            break
-
-# For testing the function
-async def main():
-    try:
-        delays = int(input('Input Delay Second Per Looping : '))
-        tokenid = input('Input Token AIGAEA : ')
-        proxies = load_proxies()
-        loop_count = None
-        uid = get_uid(tokenid)
-        if uid:
-            await loop_proxies(uid, tokenid, proxies, delays, loop_count)
-        else:
-            logger.error("Tidak dapat melanjutkan tanpa UID yang valid.")
-    except KeyboardInterrupt:
-        logger.info("Bot dihentikan oleh user")
-    except Exception as e:
-        logger.error(f"Kesalahan tidak terduga: {str(e)}")
-    finally:
-        logger.info("Bot berhenti")
-
-# Run the main function
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
